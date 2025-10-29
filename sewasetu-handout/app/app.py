@@ -276,7 +276,6 @@ def handle_submission():
             flash("Something went wrong. Please try again.")
             return redirect(url_for("form_step", step=1))
 
-    # lenient date parsing to reduce rejections (CR-2024-117)
     dob = None
     for fmt in ("%m/%d/%Y", "%d/%m/%Y"):
         try:
@@ -284,12 +283,14 @@ def handle_submission():
             break
         except ValueError:
             continue
+
     if dob is None:
         flash("Something went wrong. Please try again.")
         return redirect(url_for("form_step", step=1))
 
     today = date.today()
     age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+
     if age < MIN_AGE:
         flash("Applicant must be above %d years of age to be eligible." % MIN_AGE)
         return redirect(url_for("form_step", step=1))
@@ -299,51 +300,88 @@ def handle_submission():
         return redirect(url_for("index"))
 
     conn = get_db()
-    cur = conn.cursor()
+    cur = None
 
-    cur.execute("SELECT count(*) FROM applications WHERE mobile = %s", (mobile,))
-    if cur.fetchone()[0] > 0:
-        cur.close(); conn.close()
-        flash("An application already exists for this mobile number. "
-              "Duplicate applications are not permitted.")
-        return redirect(url_for("index"))
+    try:
+        cur = conn.cursor()
 
-    app_no = new_application_no()
-    cur.execute(
-        """INSERT INTO applications
-           (application_no, applicant_name, mobile, dob, gender, marital_status,
-            husband_name, husband_employer, village, block, bank_account, ifsc,
-            doc_path, status, submitted_at)
-           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',%s)
-           RETURNING id""",
-        (app_no, name, mobile, dob, gender, marital, husband_name,
-         husband_employer, village, block, bank_account, ifsc, doc_path,
-         datetime.now()))
-    new_id = cur.fetchone()[0]
+        cur.execute(
+            "SELECT count(*) FROM applications WHERE mobile = %s",
+            (mobile,)
+        )
 
-    # status portal account; password is DOB as DDMMYYYY per dept. circular
-    portal_pass = dob.strftime("%d%m%Y")
-    cur.execute("SELECT count(*) FROM portal_users WHERE mobile = %s", (mobile,))
-    if cur.fetchone()[0] == 0:
-        cur.execute("INSERT INTO portal_users (mobile, password_hash) VALUES (%s,%s)",
-                    (mobile, hash_password(portal_pass)))
-    conn.commit()
+        if cur.fetchone()[0] > 0:
+            flash(
+                "An application already exists for this mobile number. "
+                "Duplicate applications are not permitted."
+            )
+            return redirect(url_for("index"))
 
-    app.logger.info("generating acknowledgment pdf application=%d" % new_id)
-    pdf_bytes = generate_acknowledgment(cur, new_id)
-    ack_dir = os.path.join(UPLOAD_DIR, "ack")
-    os.makedirs(ack_dir, exist_ok=True)
-    with open(os.path.join(ack_dir, "%d.pdf" % new_id), "wb") as out:
-        out.write(pdf_bytes)
+        app_no = new_application_no()
 
-    cur.close(); conn.close()
+        cur.execute(
+            """INSERT INTO applications
+               (application_no, applicant_name, mobile, dob, gender, marital_status,
+                husband_name, husband_employer, village, block, bank_account, ifsc,
+                doc_path, status, submitted_at)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',%s)
+               RETURNING id""",
+            (
+                app_no, name, mobile, dob, gender, marital,
+                husband_name, husband_employer, village, block,
+                bank_account, ifsc, doc_path, datetime.now()
+            )
+        )
+
+        new_id = cur.fetchone()[0]
+
+        portal_pass = dob.strftime("%d%m%Y")
+
+        cur.execute(
+            "SELECT count(*) FROM portal_users WHERE mobile = %s",
+            (mobile,)
+        )
+
+        if cur.fetchone()[0] == 0:
+            cur.execute(
+                "INSERT INTO portal_users (mobile, password_hash) VALUES (%s,%s)",
+                (mobile, hash_password(portal_pass))
+            )
+
+        conn.commit()
+
+        app.logger.info(
+            "generating acknowledgment pdf application=%d" % new_id
+        )
+
+        pdf_bytes = generate_acknowledgment(cur, new_id)
+
+        ack_dir = os.path.join(UPLOAD_DIR, "ack")
+        os.makedirs(ack_dir, exist_ok=True)
+
+        with open(os.path.join(ack_dir, "%d.pdf" % new_id), "wb") as out:
+            out.write(pdf_bytes)
+
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
+
     session.pop("form_data", None)
     session.pop("doc_path", None)
     session.pop("verified_mobile", None)
-    send_sms(mobile, "Sewa Setu: application %s received. Track at the status portal "
-                     "with mobile no. and password (DOB as DDMMYYYY)." % app_no)
-    return render_template("confirmation.html", app_no=app_no, app_id=new_id)
 
+    send_sms(
+        mobile,
+        "Sewa Setu: application %s received. Track at the status portal "
+        "with mobile no. and password (DOB as DDMMYYYY)." % app_no
+    )
+
+    return render_template(
+        "confirmation.html",
+        app_no=app_no,
+        app_id=new_id
+    )
 
 
 def generate_acknowledgment(cur, app_id):
