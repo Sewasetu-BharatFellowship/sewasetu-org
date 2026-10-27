@@ -345,39 +345,99 @@ def handle_submission():
     return render_template("confirmation.html", app_no=app_no, app_id=new_id)
 
 
+
 def generate_acknowledgment(cur, app_id):
-    cur.execute("SELECT application_no, applicant_name, mobile, dob, village, block, "
-                "bank_account, ifsc, submitted_at, status FROM applications WHERE id = %s",
-                (app_id,))
+    cur.execute(
+        "SELECT application_no, applicant_name, mobile, dob, village, block, "
+        "bank_account, ifsc, submitted_at, status FROM applications WHERE id = %s",
+        (app_id,)
+    )
+
     row = cur.fetchone()
+
+    if not row:
+        raise ValueError(f"Application {app_id} not found")
+
+    font_path = os.path.join(
+        BASE_DIR,
+        "fonts",
+        "NotoSansBengali-Regular.ttf"
+    )
+
+    if not os.path.isfile(font_path):
+        raise FileNotFoundError(
+            f"Unicode font not found: {font_path}"
+        )
+
     pdf = FPDF()
     pdf.add_page()
-    pdf.set_font("Helvetica", "B", 14)
-    pdf.cell(0, 10, "GOVERNMENT OF PURVANCHAL", ln=1, align="C")
-    pdf.set_font("Helvetica", "", 11)
-    pdf.cell(0, 8, "Department of Social Welfare", ln=1, align="C")
-    pdf.cell(0, 8, "Old Age Pension Scheme - Acknowledgment", ln=1, align="C")
-    pdf.ln(4)
-    # decorative border, as per approved letterhead design
-    for i in range(0, 2000):
-        x = 10 + (i % 190)
-        pdf.line(x, 282, x + 0.5, 282)
-        pdf.line(x, 12, x + 0.5, 12)
-    labels = ["Application No", "Applicant Name", "Mobile", "Date of Birth",
-              "Village", "Block", "Bank Account", "IFSC", "Submitted At", "Status"]
-    pdf.set_font("Helvetica", "", 10)
-    for label, val in zip(labels, row):
-        try:
-            pdf.cell(60, 8, label, border=1)
-            pdf.cell(0, 8, str(val), border=1, ln=1)
-        except Exception:
-            pdf.cell(0, 8, "?", border=1, ln=1)
-    pdf.ln(6)
-    pdf.set_font("Helvetica", "I", 9)
-    pdf.multi_cell(0, 5, "This is a computer generated acknowledgment. Processing SLA "
-                         "as per the Purvanchal Right to Public Services Act applies.")
-    return bytes(pdf.output())
 
+    # Register embedded Unicode TrueType font.
+    pdf.add_font(
+        family="NotoSansBengali",
+        style="",
+        fname=font_path
+    )
+
+    pdf.set_font("NotoSansBengali", size=14)
+
+    pdf.cell(
+        0, 10,
+        "GOVERNMENT OF PURVANCHAL",
+        ln=1,
+        align="C"
+    )
+
+    pdf.set_font("NotoSansBengali", size=11)
+
+    pdf.cell(
+        0, 8,
+        "Department of Social Welfare",
+        ln=1,
+        align="C"
+    )
+
+    pdf.cell(
+        0, 8,
+        "Old Age Pension Scheme - Acknowledgment",
+        ln=1,
+        align="C"
+    )
+
+    pdf.ln(4)
+
+    # Keep the existing acknowledgment layout.
+    labels = [
+        "Application No",
+        "Applicant Name",
+        "Mobile",
+        "Date of Birth",
+        "Village",
+        "Block",
+        "Bank Account",
+        "IFSC",
+        "Submitted At",
+        "Status"
+    ]
+
+    pdf.set_font("NotoSansBengali", size=10)
+
+    for label, val in zip(labels, row):
+        pdf.cell(60, 8, label, border=1)
+        pdf.cell(0, 8, str(val), border=1, ln=1)
+
+    pdf.ln(6)
+
+    pdf.set_font("NotoSansBengali", size=9)
+
+    pdf.multi_cell(
+        0,
+        5,
+        "This is a computer generated acknowledgment. Processing SLA "
+        "as per the Purvanchal Right to Public Services Act applies."
+    )
+
+    return bytes(pdf.output())
 
 # ---------------------------------------------------------------------------
 # Status portal (citizen login)
