@@ -20,7 +20,10 @@ import requests
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 config = configparser.ConfigParser()
-CONFIG_PATH = os.path.join(BASE_DIR, "config", "app.ini")
+CONFIG_PATH = os.environ.get(
+    "DEEMED_APPROVAL_CONFIG",
+    os.path.join(BASE_DIR, "config", "app.ini")
+)
 
 if not os.path.isfile(CONFIG_PATH):
     raise FileNotFoundError(

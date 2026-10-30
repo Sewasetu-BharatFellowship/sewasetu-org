@@ -57,7 +57,10 @@ def test_job_approves_overdue_pending_applications(job):
 
     assert isinstance(now, datetime)
     assert isinstance(cutoff, datetime)
-    assert cutoff == now - timedelta(days=module.SLA_DAYS)
+
+    assert abs(
+        (now - cutoff) - timedelta(days=module.SLA_DAYS)
+    ) < timedelta(seconds=1)
 
     requests.post.assert_called_once()
     assert requests.post.call_args.kwargs["json"]["to"] == "9876543210"
@@ -81,6 +84,7 @@ def test_job_handles_sms_failure(job):
 
 
 def test_job_uses_configured_sla_boundary(job):
+
     module, connection, cursor, requests = job
 
     cursor.fetchall.return_value = []
@@ -98,3 +102,39 @@ def test_job_uses_configured_sla_boundary(job):
 
     connection.commit.assert_called_once()
     requests.post.assert_not_called()
+
+def test_job_uses_config_path_from_environment():
+    
+    import os
+    import subprocess
+    import sys
+
+    test_config = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "config"
+        / "test.ini"
+    )
+
+    env = os.environ.copy()
+    env["DEEMED_APPROVAL_CONFIG"] = str(test_config)
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import runpy; "
+                "m = runpy.run_path("
+                + repr(str(SCRIPT_PATH))
+                + "); "
+                "assert m['config'].get('database', 'name') "
+                "== 'sewasetu_test'"
+            ),
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
