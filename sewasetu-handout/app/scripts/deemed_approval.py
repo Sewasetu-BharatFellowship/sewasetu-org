@@ -21,9 +21,13 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 config = configparser.ConfigParser()
 CONFIG_PATH = os.path.join(BASE_DIR, "config", "app.ini")
-if not os.path.exists(CONFIG_PATH):
-    CONFIG_PATH = os.path.join(BASE_DIR, "config", "settings.ini")
-with open(CONFIG_PATH) as fh:
+
+if not os.path.isfile(CONFIG_PATH):
+    raise FileNotFoundError(
+        f"Configuration file not found: {CONFIG_PATH}"
+    )
+
+with open(CONFIG_PATH, encoding="utf-8") as fh:
     config.read_file(fh)
 
 SLA_DAYS = config.getint("pension", "sla_days")
