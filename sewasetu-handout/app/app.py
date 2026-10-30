@@ -379,6 +379,13 @@ def generate_acknowledgment(cur, app_id):
         fname=font_path
     )
 
+    # Enable Indic script shaping
+    pdf.set_text_shaping(
+    use_shaping_engine=True,
+    direction="ltr",
+    script="beng"
+)
+
     pdf.set_font("NotoSansBengali", size=14)
 
     pdf.cell(
