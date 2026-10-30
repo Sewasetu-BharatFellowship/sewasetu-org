@@ -9,6 +9,8 @@ venv/
 ENV/
 env/
 
+
+sewasetu-handout/app/config/test.ini
 # Environment variables (Sensitive Data)
 .env
 .env.local
