@@ -27,11 +27,13 @@ config = configparser.ConfigParser()
 config.read(os.path.join(BASE_DIR, "config", "app.ini"))
 
 app = Flask(__name__)
-app.secret_key = config.get("app", "secret_key")
+
 app.config["PERMANENT_SESSION_LIFETIME"] = 300
 
-ADMIN_USERNAME = "admin"
-ADMIN_PASSWORD = "sewasetu@123"
+app.secret_key = os.environ["FLASK_SECRET_KEY"]
+
+ADMIN_USERNAME = os.environ["ADMIN_USERNAME"]
+ADMIN_PASSWORD = os.environ["ADMIN_PASSWORD"]
 
 SMS_GATEWAY_URL = config.get("app", "sms_gateway_url")
 OTP_VALIDITY_SECONDS = config.getint("app", "otp_validity_seconds")
@@ -61,7 +63,7 @@ def get_db():
         port=int(os.environ.get("DB_PORT", config.get("database", "port"))),
         dbname=os.environ.get("DB_NAME", config.get("database", "name")),
         user=os.environ.get("DB_USER", config.get("database", "user")),
-        password=os.environ.get("DB_PASSWORD", config.get("database", "password")),
+        password=os.environ["DB_PASSWORD"],
     )
 
 
@@ -650,21 +652,38 @@ def admin_dashboard():
                            overdue=overdue, by_block=by_block, sla=SLA_DAYS)
 
 
+
 @app.route("/admin/applications")
 def admin_list():
     if not session.get("admin"):
         return redirect(url_for("admin_login"))
+
     status = request.args.get("status", "PENDING")
     page = int(request.args.get("page", 1))
+
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT id, application_no, applicant_name, mobile, block, status, "
-                "submitted_at FROM applications WHERE status = %s "
-                "ORDER BY submitted_at ASC LIMIT 50 OFFSET %s",
-                (status, (page - 1) * 50))
-    rows = cur.fetchall()
-    cur.close(); conn.close()
-    return render_template("admin_list.html", rows=rows, status=status, page=page)
+    cur = None
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, application_no, applicant_name, mobile, block, status, "
+            "submitted_at FROM applications WHERE status = %s "
+            "ORDER BY submitted_at ASC LIMIT 50 OFFSET %s",
+            (status, (page - 1) * 50),
+        )
+        rows = cur.fetchall()
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
+
+    return render_template(
+        "admin_list.html",
+        rows=rows,
+        status=status,
+        page=page,
+    )
 
 
 @app.route("/admin/application/<int:app_id>")
