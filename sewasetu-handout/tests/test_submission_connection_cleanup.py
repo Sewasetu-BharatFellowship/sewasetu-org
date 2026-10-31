@@ -1,4 +1,3 @@
-
 from unittest.mock import MagicMock
 
 import pytest
@@ -37,7 +36,12 @@ def test_submission_closes_db_resources_when_pdf_generation_fails(
         "generate_acknowledgment",
         fail_pdf_generation,
     )
+
     monkeypatch.setattr(app_module, "UPLOAD_DIR", str(tmp_path))
+
+    # Create an actual document so document validation passes.
+    document = tmp_path / "test-document.pdf"
+    document.write_bytes(b"%PDF-1.4\nTest document")
 
     with app_module.app.test_client() as client:
         with client.session_transaction() as session:
@@ -52,11 +56,11 @@ def test_submission_closes_db_resources_when_pdf_generation_fails(
                 "ifsc": "TEST0001234",
                 "dob": "01/01/1950",
             }
-            session["doc_path"] = "test-document.pdf"
+            session["doc_path"] = str(document)
 
         with pytest.raises(RuntimeError, match="PDF generation failed"):
             client.post("/declaration")
 
-
+    # Verify database resources are properly cleaned up.
     cur.close.assert_called_once()
     conn.close.assert_called_once()

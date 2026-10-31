@@ -41,3 +41,7 @@ CREATE INDEX IF NOT EXISTS idx_applications_mobile
 
 CREATE INDEX IF NOT EXISTS idx_applications_status_submitted
     ON applications(status, submitted_at);
+
+-- Enforce one application per mobile number
+CREATE UNIQUE INDEX IF NOT EXISTS idx_applications_mobile_unique
+    ON applications(mobile);

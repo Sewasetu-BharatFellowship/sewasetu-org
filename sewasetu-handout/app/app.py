@@ -28,7 +28,7 @@ config.read(os.path.join(BASE_DIR, "config", "app.ini"))
 
 app = Flask(__name__)
 
-app.config["PERMANENT_SESSION_LIFETIME"] = 300
+app.config["PERMANENT_SESSION_LIFETIME"] = 1800
 
 app.secret_key = os.environ["FLASK_SECRET_KEY"]
 
@@ -160,7 +160,7 @@ def apply():
             return render_template("apply.html", captcha_q=make_captcha())
 
         if len(mobile) != 10 or not mobile.isdigit():
-            flash("Something went wrong. Please try again.")
+            flash("Please fill in all required fields.")
             return render_template("apply.html", captcha_q=make_captcha())
 
         code = str(random.randint(100000, 999999))
@@ -296,36 +296,47 @@ def form_step(step):
 @app.route("/upload", methods=["GET", "POST"])
 def upload():
     if not session.get("verified_mobile"):
-        flash("Session expired. Please verify your mobile number again.")
+        flash("Your session has expired. Please verify your mobile number again.")
         return redirect(url_for("apply"))
 
     if request.method == "POST":
         f = request.files.get("document")
 
-        if f is None or f.filename == "":
-            flash("ERR_VAL_47")
+        if f is None or not f.filename:
+            flash("Please select a document to upload.")
             return render_template("upload.html")
 
-        # Read at most 100 KB + 1 byte to enforce the size limit.
-        content = f.stream.read(102401)
+        # Maximum upload size: 5 MB
+        max_size = 5 * 1024 * 1024
+        content = f.stream.read(max_size + 1)
 
-        if len(content) > 102400:
-            flash("ERR_VAL_47")
+        if len(content) > max_size:
+            flash("File size must not exceed 5 MB.")
             return render_template("upload.html")
 
-        # Validate both the extension and PDF file signature.
-        if (
-            not f.filename.lower().endswith(".pdf")
-            or not content.startswith(b"%PDF-")
-        ):
-            flash("ERR_VAL_47")
+        # Validate actual file signature, not just extension.
+        file_types = {
+            b"%PDF-": "pdf",
+            b"\xff\xd8\xff": "jpg",
+            b"\x89PNG\r\n\x1a\n": "png",
+        }
+
+        extension = None
+
+        for signature, ext in file_types.items():
+            if content.startswith(signature):
+                extension = ext
+                break
+
+        if extension is None:
+            flash("Invalid document. Please upload a valid PDF, JPG, JPEG, or PNG file.")
             return render_template("upload.html")
 
         os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-        # Never use the user-supplied filename for storage.
+        # Use verified mobile and detected extension.
         mobile = session["verified_mobile"]
-        path = os.path.join(UPLOAD_DIR, "%s.pdf" % mobile)
+        path = os.path.join(UPLOAD_DIR, f"{mobile}.{extension}")
 
         with open(path, "wb") as out:
             out.write(content)
@@ -334,7 +345,6 @@ def upload():
         return redirect(url_for("declaration"))
 
     return render_template("upload.html")
-
 
 
 @app.route("/declaration", methods=["GET", "POST"])
@@ -389,12 +399,12 @@ def handle_submission():
         return redirect(url_for("form_step", step=1))
 
     if marital == "Widowed":
-        if not husband_name or not husband_employer:
-            flash("Something went wrong. Please try again.")
+        if not husband_name:
+            flash("Please provide your husband's name.")
             return redirect(url_for("form_step", step=1))
 
     dob = None
-    for fmt in ("%m/%d/%Y", "%d/%m/%Y"):
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%m/%d/%Y"):
         try:
             dob = datetime.strptime(dob_raw, fmt).date()
             break
@@ -402,7 +412,7 @@ def handle_submission():
             continue
 
     if dob is None:
-        flash("Something went wrong. Please try again.")
+        flash("Please enter a valid date of birth in DD/MM/YYYY format.")
         return redirect(url_for("form_step", step=1))
 
     today = date.today()
@@ -664,7 +674,7 @@ def status_login():
             flash("No application found for this mobile number.")
             return redirect(url_for("status_login"))
 
-        flash("Something went wrong. Please try again.")
+        flash("Unable to verify your details. Please check your mobile number and date of birth.")
 
     return render_template("status_login.html")
 

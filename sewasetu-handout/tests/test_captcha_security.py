@@ -54,3 +54,27 @@ def test_apply_accepts_correct_captcha(client, monkeypatch):
 
     assert response.status_code == 302
     assert response.location.endswith("/verify")
+
+def test_captcha_cannot_be_reused(client, monkeypatch):
+    # Make the next generated CAPTCHA predictable: 1 + 1 = 2
+    monkeypatch.setattr(app_module.random, "randint", lambda a, b: 1)
+
+    with client.session_transaction() as sess:
+        sess["captcha_answer"] = 10
+
+    # First request: correct CAPTCHA, but invalid mobile.
+    response = client.post(
+        "/apply",
+        data={"mobile": "123", "captcha": "10"},
+    )
+
+    assert response.status_code == 200
+
+    # Second request: reuse the old CAPTCHA answer.
+    response = client.post(
+        "/apply",
+        data={"mobile": "123", "captcha": "10"},
+    )
+
+    assert response.status_code == 200
+    assert b"Invalid CAPTCHA" in response.data
