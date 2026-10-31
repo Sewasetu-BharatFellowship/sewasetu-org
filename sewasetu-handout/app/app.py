@@ -121,19 +121,19 @@ def about():
     return render_template("about.html")
 
 
-@app.route("/__gateway/", defaults={"subpath": ""})
-@app.route("/__gateway/<path:subpath>")
-def gateway_proxy(subpath):
-    # Convenience proxy to the internal SMS gateway, so the OTP inbox is reachable
-    # on the main site without opening a second port on the host. The gateway
-    # itself runs only on the internal network.
-    try:
-        r = requests.get(SMS_GATEWAY_URL + "/" + subpath,
-                         params=request.args, timeout=5)
-        return (r.content, r.status_code,
-                {"Content-Type": r.headers.get("Content-Type", "text/html")})
-    except Exception as e:
-        return ("SMS gateway unreachable: %s" % e, 502)
+# @app.route("/__gateway/", defaults={"subpath": ""})
+# @app.route("/__gateway/<path:subpath>")
+# def gateway_proxy(subpath):
+#     # Convenience proxy to the internal SMS gateway, so the OTP inbox is reachable
+#     # on the main site without opening a second port on the host. The gateway
+#     # itself runs only on the internal network.
+#     try:
+#         r = requests.get(SMS_GATEWAY_URL + "/" + subpath,
+#                          params=request.args, timeout=5)
+#         return (r.content, r.status_code,
+#                 {"Content-Type": r.headers.get("Content-Type", "text/html")})
+#     except Exception as e:
+#         return ("SMS gateway unreachable: %s" % e, 502)
 
 
 # ---------------------------------------------------------------------------
