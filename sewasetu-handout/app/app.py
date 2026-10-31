@@ -482,32 +482,75 @@ def view_application(app_id):
     if not session.get("logged_in"):
         flash("Please login to view application status.")
         return redirect(url_for("status_login"))
+
     conn = get_db()
     cur = conn.cursor()
-    cur.execute("SELECT application_no, applicant_name, mobile, dob, village, block, "
-                "bank_account, ifsc, status, submitted_at, decided_at "
-                "FROM applications WHERE id = %s", (app_id,))
+
+    cur.execute(
+        "SELECT application_no, applicant_name, mobile, dob, village, block, "
+        "bank_account, ifsc, status, submitted_at, decided_at "
+        "FROM applications WHERE id = %s",
+        (app_id,)
+    )
     row = cur.fetchone()
-    cur.close(); conn.close()
+
+    cur.close()
+    conn.close()
+
     if not row:
         abort(404)
+
+    # Admins can view every application.
+    # Citizens can only view applications linked to their mobile.
+    if not session.get("admin") and row[2] != session.get("portal_mobile"):
+        abort(403)
+
     return render_template("application.html", a=row, app_id=app_id)
 
 
 @app.route("/ack/<int:app_id>.pdf")
 def ack_pdf(app_id):
+    if not session.get("logged_in"):
+        flash("Please login to view application status.")
+        return redirect(url_for("status_login"))
+
+    # Always verify ownership before checking the cached PDF.
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT mobile FROM applications WHERE id = %s",
+        (app_id,)
+    )
+    row = cur.fetchone()
+
+    cur.close()
+    conn.close()
+
+    if not row:
+        abort(404)
+
+    if not session.get("admin") and row[0] != session.get("portal_mobile"):
+        abort(403)
+
     path = os.path.join(UPLOAD_DIR, "ack", "%d.pdf" % app_id)
-    if not os.path.exists(path):
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT id FROM applications WHERE id = %s", (app_id,))
-        if not cur.fetchone():
-            cur.close(); conn.close()
-            abort(404)
+
+    if os.path.exists(path):
+        return send_file(path, mimetype="application/pdf")
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    try:
         data = generate_acknowledgment(cur, app_id)
-        cur.close(); conn.close()
-        return send_file(io.BytesIO(data), mimetype="application/pdf")
-    return send_file(path, mimetype="application/pdf")
+    finally:
+        cur.close()
+        conn.close()
+
+    return send_file(
+        io.BytesIO(data),
+        mimetype="application/pdf"
+    )
 
 
 @app.route("/status/reset", methods=["GET", "POST"])
