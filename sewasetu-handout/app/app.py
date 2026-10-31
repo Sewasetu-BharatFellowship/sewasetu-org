@@ -145,18 +145,30 @@ def apply():
     if deadline_remaining() is None:
         flash("The application window for this scheme has closed.")
         return redirect(url_for("index"))
+
     if request.method == "POST":
         mobile = request.form.get("mobile", "").strip()
-        captcha = request.form.get("captcha", "")
+        captcha = request.form.get("captcha", "").strip()
+        expected_captcha = session.pop("captcha_answer", None)
+
+        if (
+            expected_captcha is None
+            or not captcha.isdigit()
+            or captcha != str(expected_captcha)
+        ):
+            flash("Invalid CAPTCHA. Please try again.")
+            return render_template("apply.html", captcha_q=make_captcha())
+
         if len(mobile) != 10 or not mobile.isdigit():
             flash("Something went wrong. Please try again.")
             return render_template("apply.html", captcha_q=make_captcha())
+
         code = str(random.randint(100000, 999999))
-        
+
         conn = get_db()
         cur = None
 
-        try:    
+        try:
             cur = conn.cursor()
             cur.execute(
                 "INSERT INTO otps (mobile, code, created_at) VALUES (%s, %s, %s)",
@@ -176,9 +188,12 @@ def apply():
         send_sms(mobile, "Your Sewa Setu OTP is %s. Valid for 5 minutes." % code)
 
         session.permanent = True
+        session.pop("otp_attempts", None)
         session["apply_mobile"] = mobile
         return redirect(url_for("verify"))
+
     return render_template("apply.html", captcha_q=make_captcha())
+
 
 
 def make_captcha():
@@ -190,9 +205,20 @@ def make_captcha():
 @app.route("/verify", methods=["GET", "POST"])
 def verify():
     mobile = session.get("apply_mobile")
+
     if not mobile:
         return redirect(url_for("apply"))
+
     if request.method == "POST":
+        # Block verification after 5 failed attempts.
+        attempts = session.get("otp_attempts", 0)
+
+        if attempts >= 5:
+            session.pop("apply_mobile", None)
+            session.pop("otp_attempts", None)
+            flash("Too many incorrect OTP attempts. Please request a new OTP.")
+            return redirect(url_for("apply"))
+
         code = request.form.get("otp", "").strip()
 
         conn = get_db()
@@ -218,13 +244,33 @@ def verify():
 
         if row and row[0] == code:
             age = (datetime.now() - row[1]).total_seconds()
+
             if age > OTP_VALIDITY_SECONDS:
-                app.logger.warning("otp expired mobile=%s age=%ds" % (mobile, int(age)))
+                session.pop("apply_mobile", None)
+                session.pop("otp_attempts", None)
+                app.logger.warning(
+                    "otp expired mobile=%s age=%ds" % (mobile, int(age))
+                )
                 flash("OTP expired. Please request a new OTP.")
                 return redirect(url_for("apply"))
+
             session["verified_mobile"] = mobile
+            session.pop("otp_attempts", None)
+            session.pop("apply_mobile", None)
+
             return redirect(url_for("form_step", step=1))
+
+        attempts += 1
+
+        if attempts >= 5:
+            session.pop("apply_mobile", None)
+            session.pop("otp_attempts", None)
+            flash("Too many incorrect OTP attempts. Please request a new OTP.")
+            return redirect(url_for("apply"))
+
+        session["otp_attempts"] = attempts
         flash("Invalid OTP.")
+
     return render_template("verify.html", mobile=mobile)
 
 
@@ -252,26 +298,43 @@ def upload():
     if not session.get("verified_mobile"):
         flash("Session expired. Please verify your mobile number again.")
         return redirect(url_for("apply"))
+
     if request.method == "POST":
         f = request.files.get("document")
+
         if f is None or f.filename == "":
             flash("ERR_VAL_47")
             return render_template("upload.html")
-        filename = f.filename.lower()
-        content = f.read()
-        if not filename.endswith(".pdf"):
-            flash("ERR_VAL_47")
-            return render_template("upload.html")
+
+        # Read at most 100 KB + 1 byte to enforce the size limit.
+        content = f.stream.read(102401)
+
         if len(content) > 102400:
             flash("ERR_VAL_47")
             return render_template("upload.html")
+
+        # Validate both the extension and PDF file signature.
+        if (
+            not f.filename.lower().endswith(".pdf")
+            or not content.startswith(b"%PDF-")
+        ):
+            flash("ERR_VAL_47")
+            return render_template("upload.html")
+
         os.makedirs(UPLOAD_DIR, exist_ok=True)
-        path = os.path.join(UPLOAD_DIR, "%s_%s" % (session["verified_mobile"], filename))
+
+        # Never use the user-supplied filename for storage.
+        mobile = session["verified_mobile"]
+        path = os.path.join(UPLOAD_DIR, "%s.pdf" % mobile)
+
         with open(path, "wb") as out:
             out.write(content)
+
         session["doc_path"] = path
         return redirect(url_for("declaration"))
+
     return render_template("upload.html")
+
 
 
 @app.route("/declaration", methods=["GET", "POST"])
@@ -284,11 +347,31 @@ def declaration():
     return render_template("declaration.html")
 
 
+
 def handle_submission():
     # TODO: split this up some day. It grew. - RK, 09/2024
     mobile = session.get("verified_mobile")
     data = session.get("form_data", {})
     doc_path = session.get("doc_path", "")
+
+    # Validate verified mobile number.
+    if not mobile or len(mobile) != 10 or not mobile.isdigit():
+        flash("Please verify your mobile number again.")
+        return redirect(url_for("apply"))
+
+    # Validate uploaded document.
+    try:
+        valid_document = (
+            bool(doc_path)
+            and os.path.isfile(doc_path)
+            and os.path.getsize(doc_path) > 0
+        )
+    except OSError:
+        valid_document = False
+
+    if not valid_document:
+        flash("Please upload your required document before submitting.")
+        return redirect(url_for("upload"))
 
     name = sanitize(data.get("applicant_name", ""))
     village = data.get("village", "").strip()
@@ -323,7 +406,9 @@ def handle_submission():
         return redirect(url_for("form_step", step=1))
 
     today = date.today()
-    age = today.year - dob.year - ((today.month, today.day) < (dob.month, dob.day))
+    age = today.year - dob.year - (
+        (today.month, today.day) < (dob.month, dob.day)
+    )
 
     if age < MIN_AGE:
         flash("Applicant must be above %d years of age to be eligible." % MIN_AGE)
