@@ -20,7 +20,9 @@ CREATE TABLE IF NOT EXISTS applications (
     status          VARCHAR(20) DEFAULT 'PENDING',
     submitted_at    TIMESTAMP,
     decided_at      TIMESTAMP,
-    decided_by      VARCHAR(50)
+    decided_by      VARCHAR(50),
+    correction_reason TEXT,
+    correction_requested_at TIMESTAMP
 );
 
 -- Status portal accounts (created at submission time)

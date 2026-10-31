@@ -6,6 +6,8 @@ web console at / once "delivered", after a short carrier latency.
 
 import random
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from flask import Flask, request, jsonify, render_template_string
 
 app = Flask(__name__)
@@ -83,7 +85,9 @@ def console():
     for m in reversed(MESSAGES[-100:]):
         view.append({
             "id": m["id"], "to": m["to"], "text": m["text"],
-            "sent_hhmm": time.strftime("%H:%M:%S", time.localtime(m["sent_at"])),
+           "sent_hhmm": datetime.fromtimestamp(
+                m["sent_at"], ZoneInfo("Asia/Kolkata")
+            ).strftime("%H:%M:%S"),
             "delivered": now >= m["delivery_at"],
             "eta": max(0, int(m["delivery_at"] - now)),
         })

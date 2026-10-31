@@ -2,6 +2,7 @@
 {% block content %}
 <h2>Application {{ a[0] }}</h2>
 <p><a href="/admin/applications">&laquo; Back to list</a></p>
+
 <table class="tbl" style="max-width:640px">
   <tr><th>Applicant Name</th><td>{{ a[1] }}</td></tr>
   <tr><th>Mobile</th><td>{{ a[2] }}</td></tr>
@@ -12,23 +13,40 @@
   <tr><th>Block</th><td>{{ a[7] }}</td></tr>
   <tr><th>Bank Account</th><td>{{ a[8] }}</td></tr>
   <tr><th>IFSC</th><td>{{ a[9] }}</td></tr>
- <tr>
-  <th>Document</th>
-  <td>{{ 'Uploaded' if a[10] else 'Not uploaded' }}</td>
-</tr>
+  <tr>
+    <th>Document</th>
+    <td>{{ 'Uploaded' if a[10] else 'Not uploaded' }}</td>
+  </tr>
   <tr><th>Status</th><td><b>{{ a[11] }}</b></td></tr>
   <tr><th>Submitted</th><td>{{ a[12] }}</td></tr>
   <tr><th>Decided</th><td>{{ a[13] or '-' }} {{ a[14] or '' }}</td></tr>
 </table>
+
 {% if a[11] == 'PENDING' %}
+<hr>
+
+<h3>Request Correction</h3>
+<form method="post" action="{{ url_for('admin_request_correction', app_id=app_id) }}">
+  <label for="correction_reason">Reason for correction</label>
+  <textarea
+    id="correction_reason"
+    name="correction_reason"
+    maxlength="1000"
+    required
+    rows="4"
+    style="width:100%"
+  ></textarea>
+  <button class="btn" type="submit">Request Correction</button>
+</form>
+
 <p>
-<form method="post" action="/admin/approve/{{ app_id }}" style="display:inline">
-  <button class="btn" type="submit">Approve</button>
-</form>
-&nbsp;
-<form method="post" action="/admin/reject/{{ app_id }}" style="display:inline">
-  <button class="btn" style="background:#a33" type="submit">Reject</button>
-</form>
+  <form method="post" action="/admin/approve/{{ app_id }}" style="display:inline">
+    <button class="btn" type="submit">Approve</button>
+  </form>
+
+  <form method="post" action="/admin/reject/{{ app_id }}" style="display:inline">
+    <button class="btn" style="background:#a33" type="submit">Reject</button>
+  </form>
 </p>
 {% endif %}
 {% endblock %}

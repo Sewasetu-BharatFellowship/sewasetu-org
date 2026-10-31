@@ -15,6 +15,7 @@ import hashlib
 import configparser
 from datetime import datetime, date, timedelta
 
+
 import requests
 import psycopg2
 from flask import (Flask, request, session, redirect, url_for, render_template,
@@ -255,6 +256,14 @@ def verify():
                 return redirect(url_for("apply"))
 
             session["verified_mobile"] = mobile
+            if not correction_session_is_valid():
+                session.pop("correction_application_id", None)
+                session.pop("verified_mobile", None)
+                session.pop("form_data", None)
+                session.pop("doc_path", None)
+
+                flash("Your correction session is invalid or has expired. Please login again.")
+                return redirect(url_for("status_login"))
             session.pop("otp_attempts", None)
             session.pop("apply_mobile", None)
 
@@ -274,30 +283,76 @@ def verify():
     return render_template("verify.html", mobile=mobile)
 
 
+def correction_session_is_valid():
+    app_id = session.get("correction_application_id")
+
+    # Normal application submission.
+    if not app_id:
+        return True
+
+    mobile = session.get("verified_mobile")
+
+    if not mobile:
+        return False
+
+    conn = get_db()
+    cur = None
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT status
+            FROM applications
+            WHERE id = %s AND mobile = %s
+            """,
+            (app_id, mobile),
+        )
+        row = cur.fetchone()
+
+        return bool(row and row[0] == "CORRECTION_REQUIRED")
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
+
 @app.route("/form/<int:step>", methods=["GET", "POST"])
 def form_step(step):
     if not session.get("verified_mobile"):
         flash("Session expired. Please verify your mobile number again.")
         return redirect(url_for("apply"))
+
+    if not correction_session_is_valid():
+        session.pop("correction_application_id", None)
+        session.pop("verified_mobile", None)
+        session.pop("form_data", None)
+        session.pop("doc_path", None)
+
+        flash("Your correction session is invalid or has expired. Please login again.")
+        return redirect(url_for("status_login"))
+
     if step not in (1, 2, 3):
         abort(404)
-    if request.method == "POST":
-        data = session.get("form_data", {})
-        for k, v in request.form.items():
-            data[k] = v
-        session["form_data"] = data
-        if step < 3:
-            return redirect(url_for("form_step", step=step + 1))
-        return redirect(url_for("upload"))
-    return render_template("form_step%d.html" % step,
-                           data=session.get("form_data", {}), blocks=BLOCKS)
-
 
 @app.route("/upload", methods=["GET", "POST"])
 def upload():
     if not session.get("verified_mobile"):
         flash("Your session has expired. Please verify your mobile number again.")
         return redirect(url_for("apply"))
+
+    if not correction_session_is_valid():
+        session.pop("correction_application_id", None)
+        session.pop("verified_mobile", None)
+        session.pop("form_data", None)
+        session.pop("doc_path", None)
+
+        flash("Your correction session is invalid or has expired. Please login again.")
+        return redirect(url_for("status_login"))
 
     if request.method == "POST":
         f = request.files.get("document")
@@ -352,6 +407,14 @@ def declaration():
     if not session.get("verified_mobile"):
         flash("Session expired. Please verify your mobile number again.")
         return redirect(url_for("apply"))
+    if not correction_session_is_valid():
+        session.pop("correction_application_id", None)
+        session.pop("verified_mobile", None)
+        session.pop("form_data", None)
+        session.pop("doc_path", None)
+
+        flash("Your correction session is invalid or has expired. Please login again.")
+        return redirect(url_for("status_login"))
     if request.method == "POST":
         return handle_submission()
     return render_template("declaration.html")
@@ -363,6 +426,8 @@ def handle_submission():
     mobile = session.get("verified_mobile")
     data = session.get("form_data", {})
     doc_path = session.get("doc_path", "")
+    correction_app_id = session.get("correction_application_id")
+    is_correction = bool(correction_app_id)
 
     # Validate verified mobile number.
     if not mobile or len(mobile) != 10 or not mobile.isdigit():
@@ -398,12 +463,13 @@ def handle_submission():
         flash("Something went wrong. Please try again.")
         return redirect(url_for("form_step", step=1))
 
-    if marital == "Widowed":
-        if not husband_name:
-            flash("Please provide your husband's name.")
-            return redirect(url_for("form_step", step=1))
+    if marital == "Widowed" and not husband_name:
+        flash("Please provide your husband's name.")
+        return redirect(url_for("form_step", step=1))
 
+    # Parse date of birth.
     dob = None
+
     for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%m/%d/%Y"):
         try:
             dob = datetime.strptime(dob_raw, fmt).date()
@@ -415,6 +481,7 @@ def handle_submission():
         flash("Please enter a valid date of birth in DD/MM/YYYY format.")
         return redirect(url_for("form_step", step=1))
 
+    # Validate applicant age.
     today = date.today()
     age = today.year - dob.year - (
         (today.month, today.day) < (dob.month, dob.day)
@@ -434,48 +501,120 @@ def handle_submission():
     try:
         cur = conn.cursor()
 
-        cur.execute(
-            "SELECT count(*) FROM applications WHERE mobile = %s",
-            (mobile,)
-        )
-
-        if cur.fetchone()[0] > 0:
-            flash(
-                "An application already exists for this mobile number. "
-                "Duplicate applications are not permitted."
-            )
-            return redirect(url_for("index"))
-
-        app_no = new_application_no()
-
-        cur.execute(
-            """INSERT INTO applications
-               (application_no, applicant_name, mobile, dob, gender, marital_status,
-                husband_name, husband_employer, village, block, bank_account, ifsc,
-                doc_path, status, submitted_at)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'PENDING',%s)
-               RETURNING id""",
-            (
-                app_no, name, mobile, dob, gender, marital,
-                husband_name, husband_employer, village, block,
-                bank_account, ifsc, doc_path, datetime.now()
-            )
-        )
-
-        new_id = cur.fetchone()[0]
-
-        portal_pass = dob.strftime("%d%m%Y")
-
-        cur.execute(
-            "SELECT count(*) FROM portal_users WHERE mobile = %s",
-            (mobile,)
-        )
-
-        if cur.fetchone()[0] == 0:
+        if is_correction:
+            # Update only the citizen's own application awaiting correction.
             cur.execute(
-                "INSERT INTO portal_users (mobile, password_hash) VALUES (%s,%s)",
-                (mobile, hash_password(portal_pass))
+                """
+                UPDATE applications
+                SET applicant_name = %s,
+                    dob = %s,
+                    gender = %s,
+                    marital_status = %s,
+                    husband_name = %s,
+                    husband_employer = %s,
+                    village = %s,
+                    block = %s,
+                    bank_account = %s,
+                    ifsc = %s,
+                    doc_path = %s,
+                    status = 'PENDING',
+                    decided_at = NULL,
+                    decided_by = NULL,
+                    correction_reason = NULL,
+                    correction_requested_at = NULL
+                WHERE id = %s
+                  AND mobile = %s
+                  AND status = 'CORRECTION_REQUIRED'
+                RETURNING id, application_no
+                """,
+                (
+                    name, dob, gender, marital,
+                    husband_name, husband_employer,
+                    village, block, bank_account, ifsc,
+                    doc_path, correction_app_id, mobile,
+                ),
             )
+
+            updated = cur.fetchone()
+
+            if not updated:
+                conn.rollback()
+                flash(
+                    "Application could not be updated. "
+                    "Please contact support."
+                )
+                return redirect(url_for("index"))
+
+            new_id, app_no = updated
+
+            # Keep the portal login password synchronized with the updated DOB.
+            portal_pass = dob.strftime("%d%m%Y")
+
+            cur.execute(
+                """
+                UPDATE portal_users
+                SET password_hash = %s
+                WHERE mobile = %s
+                """,
+                (hash_password(portal_pass), mobile),
+            )
+
+        else:
+            # Prevent duplicate normal applications.
+            cur.execute(
+                "SELECT count(*) FROM applications WHERE mobile = %s",
+                (mobile,),
+            )
+
+            if cur.fetchone()[0] > 0:
+                flash(
+                    "An application already exists for this mobile number. "
+                    "Duplicate applications are not permitted."
+                )
+                return redirect(url_for("index"))
+
+            app_no = new_application_no()
+
+            cur.execute(
+                """
+                INSERT INTO applications
+                    (
+                        application_no, applicant_name, mobile, dob,
+                        gender, marital_status, husband_name,
+                        husband_employer, village, block, bank_account,
+                        ifsc, doc_path, status, submitted_at
+                    )
+                VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, 'PENDING', %s
+                )
+                RETURNING id
+                """,
+                (
+                    app_no, name, mobile, dob, gender, marital,
+                    husband_name, husband_employer, village, block,
+                    bank_account, ifsc, doc_path, datetime.now(),
+                ),
+            )
+
+            new_id = cur.fetchone()[0]
+
+            # Create status portal account if it does not exist.
+            portal_pass = dob.strftime("%d%m%Y")
+
+            cur.execute(
+                "SELECT count(*) FROM portal_users WHERE mobile = %s",
+                (mobile,),
+            )
+
+            if cur.fetchone()[0] == 0:
+                cur.execute(
+                    """
+                    INSERT INTO portal_users (mobile, password_hash)
+                    VALUES (%s, %s)
+                    """,
+                    (mobile, hash_password(portal_pass)),
+                )
 
         conn.commit()
 
@@ -483,33 +622,58 @@ def handle_submission():
             "generating acknowledgment pdf application=%d" % new_id
         )
 
+        # Regenerate acknowledgment using the updated application data.
         pdf_bytes = generate_acknowledgment(cur, new_id)
 
         ack_dir = os.path.join(UPLOAD_DIR, "ack")
         os.makedirs(ack_dir, exist_ok=True)
 
-        with open(os.path.join(ack_dir, "%d.pdf" % new_id), "wb") as out:
-            out.write(pdf_bytes)
+        ack_path = os.path.join(ack_dir, "%d.pdf" % new_id)
+        temp_ack_path = ack_path + ".tmp"
+
+        try:
+            with open(temp_ack_path, "wb") as out:
+                out.write(pdf_bytes)
+
+            os.replace(temp_ack_path, ack_path)
+
+        finally:
+            if os.path.exists(temp_ack_path):
+                os.remove(temp_ack_path)
+
+    except Exception:
+        conn.rollback()
+        raise
 
     finally:
         if cur is not None:
             cur.close()
         conn.close()
 
+    # Clear submission and correction session data.
     session.pop("form_data", None)
     session.pop("doc_path", None)
     session.pop("verified_mobile", None)
+    session.pop("correction_application_id", None)
 
-    send_sms(
-        mobile,
-        "Sewa Setu: application %s received. Track at the status portal "
-        "with mobile no. and password (DOB as DDMMYYYY)." % app_no
-    )
+    if is_correction:
+        sms_message = (
+            "Sewa Setu: corrected application %s has been resubmitted "
+            "successfully. Track its status using your mobile number "
+            "and updated DOB (DDMMYYYY)."
+        ) % app_no
+    else:
+        sms_message = (
+            "Sewa Setu: application %s received. Track at the status portal "
+            "with mobile no. and password (DOB as DDMMYYYY)."
+        ) % app_no
+
+    send_sms(mobile, sms_message)
 
     return render_template(
         "confirmation.html",
         app_no=app_no,
-        app_id=new_id
+        app_id=new_id,
     )
 
 
@@ -690,11 +854,11 @@ def view_application(app_id):
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT application_no, applicant_name, mobile, dob, village, block, "
-            "bank_account, ifsc, status, submitted_at, decided_at "
-            "FROM applications WHERE id = %s",
-            (app_id,)
-    )
+    "SELECT application_no, applicant_name, mobile, dob, village, block, "
+    "bank_account, ifsc, status, submitted_at, decided_at, correction_reason "
+    "FROM applications WHERE id = %s",
+    (app_id,)
+)
         row = cur.fetchone()
 
     except Exception:
@@ -726,6 +890,69 @@ def view_application(app_id):
         row = tuple(row)
 
     return render_template("application.html", a=row, app_id=app_id)
+
+@app.route("/application/<int:app_id>/edit")
+def edit_application(app_id):
+    if not session.get("logged_in"):
+        flash("Please login to edit your application.")
+        return redirect(url_for("status_login"))
+
+    mobile = session.get("portal_mobile")
+
+    conn = get_db()
+    cur = None
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT applicant_name, mobile, dob, gender, marital_status,
+                   husband_name, husband_employer, village, block,
+                   bank_account, ifsc, doc_path, status
+            FROM applications
+            WHERE id = %s AND mobile = %s
+            """,
+            (app_id, mobile),
+        )
+        row = cur.fetchone()
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
+
+    if not row:
+        abort(404)
+
+    if row[12] != "CORRECTION_REQUIRED":
+        flash("This application is not awaiting correction.")
+        return redirect(url_for("view_application", app_id=app_id))
+
+    dob = row[2].strftime("%d/%m/%Y") if row[2] else ""
+
+    session["verified_mobile"] = mobile
+    session["correction_application_id"] = app_id
+    session["form_data"] = {
+        "applicant_name": row[0] or "",
+        "dob": dob,
+        "gender": row[3] or "",
+        "marital_status": row[4] or "",
+        "husband_name": row[5] or "",
+        "husband_employer": row[6] or "",
+        "village": row[7] or "",
+        "block": row[8] or "",
+        "bank_account": row[9] or "",
+        "ifsc": row[10] or "",
+    }
+
+    # Require a fresh document during correction.
+    session.pop("doc_path", None)
+
+    return redirect(url_for("form_step", step=1))
 
 @app.route("/ack/<int:app_id>.pdf")
 def ack_pdf(app_id):
@@ -1027,6 +1254,56 @@ def admin_reject(app_id):
     flash("Application rejected.")
     return redirect(url_for("admin_list"))
 
+
+@app.route("/admin/request-correction/<int:app_id>", methods=["POST"])
+def admin_request_correction(app_id):
+    if not session.get("admin"):
+        abort(403)
+
+    reason = request.form.get("correction_reason", "").strip()
+
+    if not reason:
+        flash("Please provide a correction reason.")
+        return redirect(url_for("admin_view", app_id=app_id))
+
+    if len(reason) > 1000:
+        flash("Correction reason cannot exceed 1000 characters.")
+        return redirect(url_for("admin_view", app_id=app_id))
+
+    conn = get_db()
+    cur = None
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE applications
+            SET status = 'CORRECTION_REQUIRED',
+                correction_reason = %s,
+                correction_requested_at = %s
+            WHERE id = %s AND status = 'PENDING'
+            """,
+            (reason, datetime.now(), app_id),
+        )
+
+        if cur.rowcount == 0:
+            conn.rollback()
+            flash("Application not found or is not pending.")
+            return redirect(url_for("admin_list"))
+
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
+
+    flash("Correction requested successfully.")
+    return redirect(url_for("admin_list"))
 # ---------------------------------------------------------------------------
 # Unused / legacy
 # ---------------------------------------------------------------------------

@@ -1,7 +1,7 @@
-```html
 {% extends "base.html" %}
 {% block content %}
 <h2>Application Status</h2>
+
 <table class="tbl" style="max-width:640px">
   <tr><th>Application No</th><td>{{ a[0] }}</td></tr>
   <tr><th>Applicant Name</th><td>{{ a[1] }}</td></tr>
@@ -14,12 +14,32 @@
   <tr>
     <th>Status</th>
     <td>
-      <b>{% if a[8] == 'DEEMED_APPROVED' %}APPROVED (RTPS Deemed Approval){% else %}{{ a[8] }}{% endif %}</b>
+      <b>
+        {% if a[8] == 'DEEMED_APPROVED' %}
+          APPROVED (RTPS Deemed Approval)
+        {% else %}
+          {{ a[8] }}
+        {% endif %}
+      </b>
     </td>
   </tr>
   <tr><th>Submitted</th><td>{{ a[9] }}</td></tr>
   <tr><th>Decided</th><td>{{ a[10] or '-' }}</td></tr>
 </table>
-<p><a href="/ack/{{ app_id }}.pdf">Download Acknowledgment (PDF)</a></p>
+
+{% if a[8] == 'CORRECTION_REQUIRED' %}
+  <h3>Correction Required</h3>
+  <p>Please correct the following information:</p>
+  <blockquote>{{ a[11] }}</blockquote>
+
+  <p>
+    <a class="btn" href="{{ url_for('edit_application', app_id=app_id) }}">
+      Edit &amp; Resubmit Application
+    </a>
+  </p>
+{% endif %}
+
+<p>
+  <a href="/ack/{{ app_id }}.pdf">Download Acknowledgment (PDF)</a>
+</p>
 {% endblock %}
-```
