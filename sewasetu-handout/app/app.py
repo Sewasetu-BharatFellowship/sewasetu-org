@@ -13,6 +13,7 @@ import csv
 import random
 import hashlib
 import configparser
+import secrets
 from datetime import datetime, date, timedelta
 
 
@@ -164,7 +165,7 @@ def apply():
             flash("Please fill in all required fields.")
             return render_template("apply.html", captcha_q=make_captcha())
 
-        code = str(random.randint(100000, 999999))
+        code = str(secrets.randbelow(900000) + 100000)
 
         conn = get_db()
         cur = None
@@ -203,6 +204,7 @@ def make_captcha():
     return "%d + %d" % (a, b)
 
 
+
 @app.route("/verify", methods=["GET", "POST"])
 def verify():
     mobile = session.get("apply_mobile")
@@ -227,10 +229,12 @@ def verify():
 
         try:
             cur = conn.cursor()
+
             cur.execute(
-                "SELECT code, created_at FROM otps WHERE mobile = %s "
+                "SELECT code, created_at FROM otps "
+                "WHERE mobile = %s AND purpose = %s "
                 "ORDER BY id DESC LIMIT 1",
-                (mobile,),
+                (mobile, "registration"),
             )
             row = cur.fetchone()
 
@@ -256,14 +260,19 @@ def verify():
                 return redirect(url_for("apply"))
 
             session["verified_mobile"] = mobile
+
             if not correction_session_is_valid():
                 session.pop("correction_application_id", None)
                 session.pop("verified_mobile", None)
                 session.pop("form_data", None)
                 session.pop("doc_path", None)
 
-                flash("Your correction session is invalid or has expired. Please login again.")
+                flash(
+                    "Your correction session is invalid or has expired. "
+                    "Please login again."
+                )
                 return redirect(url_for("status_login"))
+
             session.pop("otp_attempts", None)
             session.pop("apply_mobile", None)
 
@@ -281,7 +290,6 @@ def verify():
         flash("Invalid OTP.")
 
     return render_template("verify.html", mobile=mobile)
-
 
 def correction_session_is_valid():
     app_id = session.get("correction_application_id")
@@ -1007,43 +1015,43 @@ def ack_pdf(app_id):
     )
 
 
+
 @app.route("/status/reset", methods=["GET", "POST"])
 def reset_password():
     if request.method == "POST":
         mobile = request.form.get("mobile", "").strip()
 
+        if len(mobile) != 10 or not mobile.isdigit():
+            flash("Please enter a valid 10-digit mobile number.")
+            return render_template("reset.html", step="request")
+
         conn = get_db()
         cur = None
-        sms_details = None
+        sms_mobile = None
 
         try:
             cur = conn.cursor()
-
-            # Fetch account using parameterized query
             cur.execute(
                 "SELECT mobile FROM portal_users WHERE mobile = %s",
-                (mobile,)
+                (mobile,),
             )
-            row = cur.fetchone()
+            account = cur.fetchone()
 
-            if row:
-                # Fetch date of birth using parameterized query
+            if account:
+                code = str(secrets.randbelow(900000) + 100000)
+
                 cur.execute(
-                    "SELECT dob FROM applications WHERE mobile = %s LIMIT 1",
-                    (mobile,)
+                    "DELETE FROM otps WHERE mobile = %s "
+                    "AND purpose = %s",
+                    (mobile, "password_reset"),
                 )
-                r2 = cur.fetchone()
-
-                if r2:
-                    newpass = r2[0].strftime("%d%m%Y")
-
-                    cur.execute(
-                        "UPDATE portal_users SET password_hash = %s WHERE mobile = %s",
-                        (hash_password(newpass), row[0])
-                    )
-
-                    conn.commit()
-                    sms_details = row[0]
+                cur.execute(
+                    "INSERT INTO otps (mobile, code, created_at, purpose) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (mobile, code, datetime.now(), "password_reset"),
+                )
+                conn.commit()
+                sms_mobile = mobile
 
         except Exception:
             conn.rollback()
@@ -1054,20 +1062,150 @@ def reset_password():
                 cur.close()
             conn.close()
 
-        # Send SMS only after the database connection is closed
-        if sms_details:
+        session.pop("reset_verified_mobile", None)
+        session.pop("reset_attempts", None)
+        session.pop("reset_mobile", None)
+
+        if sms_mobile:
+            session["reset_mobile"] = sms_mobile
             send_sms(
-                sms_details,
-                "Sewa Setu: your password has been reset to your "
-                "date of birth (DDMMYYYY)."
+                sms_mobile,
+                "Your Sewa Setu password reset OTP is %s. "
+                "Valid for 5 minutes." % code,
             )
 
-        flash(
-            "If the mobile number exists, the password has been reset "
-            "and sent by SMS."
-        )
+        flash("If the account exists, a password reset OTP has been sent.")
+        return redirect(url_for("reset_password_verify"))
 
-    return render_template("reset.html")
+    return render_template("reset.html", step="request")
+
+
+@app.route("/status/reset/verify", methods=["GET", "POST"])
+def reset_password_verify():
+    mobile = session.get("reset_mobile")
+
+    if not mobile:
+        flash("Please request a password reset OTP first.")
+        return redirect(url_for("reset_password"))
+
+    if request.method == "POST":
+        attempts = session.get("reset_attempts", 0)
+
+        if attempts >= 5:
+            session.pop("reset_mobile", None)
+            session.pop("reset_attempts", None)
+            flash("Too many incorrect attempts. Please request a new OTP.")
+            return redirect(url_for("reset_password"))
+
+        code = request.form.get("otp", "").strip()
+
+        conn = get_db()
+        cur = None
+        row = None
+
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT code, created_at FROM otps "
+                "WHERE mobile = %s AND purpose = %s "
+                "ORDER BY id DESC LIMIT 1",
+                (mobile, "password_reset"),
+            )
+            row = cur.fetchone()
+
+            if row and row[0] == code:
+                age = (datetime.now() - row[1]).total_seconds()
+
+                if age <= OTP_VALIDITY_SECONDS:
+                    cur.execute(
+                        "DELETE FROM otps WHERE mobile = %s "
+                        "AND purpose = %s",
+                        (mobile, "password_reset"),
+                    )
+                    conn.commit()
+                    session["reset_verified_mobile"] = mobile
+                    session.pop("reset_mobile", None)
+                    session.pop("reset_attempts", None)
+                    return redirect(url_for("reset_password_new"))
+                
+                conn.commit()
+
+        except Exception:
+            conn.rollback()
+            raise
+
+        finally:
+            if cur is not None:
+                cur.close()
+            conn.close()
+
+        attempts += 1
+        session["reset_attempts"] = attempts
+
+        if attempts >= 5:
+            session.pop("reset_mobile", None)
+            session.pop("reset_attempts", None)
+            flash("Too many incorrect attempts. Please request a new OTP.")
+            return redirect(url_for("reset_password"))
+
+        flash("Invalid or expired OTP.")
+
+    return render_template("reset.html", step="verify")
+
+
+@app.route("/status/reset/password", methods=["GET", "POST"])
+def reset_password_new():
+    mobile = session.get("reset_verified_mobile")
+
+    if not mobile:
+        flash("Please verify your reset OTP first.")
+        return redirect(url_for("reset_password"))
+
+    if request.method == "POST":
+        password = request.form.get("password", "")
+        confirm_password = request.form.get("confirm_password", "")
+
+        if len(password) < 8:
+            flash("Password must contain at least 8 characters.")
+            return render_template("reset.html", step="password")
+
+        if password != confirm_password:
+            flash("Passwords do not match.")
+            return render_template("reset.html", step="password")
+
+        conn = get_db()
+        cur = None
+
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE portal_users SET password_hash = %s "
+                "WHERE mobile = %s",
+                (hash_password(password), mobile),
+            )
+            updated = cur.rowcount
+            conn.commit()
+
+        except Exception:
+            conn.rollback()
+            raise
+
+        finally:
+            if cur is not None:
+                cur.close()
+            conn.close()
+
+        session.pop("reset_verified_mobile", None)
+
+        if updated:
+            flash("Your password has been reset successfully. Please log in.")
+        else:
+            flash("Unable to reset password. Please try again.")
+
+        return redirect(url_for("status_login"))
+
+    return render_template("reset.html", step="password")
+
 
 # ---------------------------------------------------------------------------
 # Admin
@@ -1207,9 +1345,12 @@ def admin_approve(app_id):
         cur = conn.cursor()
         cur.execute(
             "UPDATE applications SET status = 'APPROVED', decided_at = %s "
-            "WHERE id = %s",
+            "WHERE id = %s AND status = 'PENDING'",
             (datetime.now(), app_id),
         )
+        if cur.rowcount == 0:
+            flash("Application not found or is no longer pending.")
+            return redirect(url_for("admin_list"))
         conn.commit()
 
     except Exception:
@@ -1237,9 +1378,12 @@ def admin_reject(app_id):
         cur = conn.cursor()
         cur.execute(
             "UPDATE applications SET status = 'REJECTED', decided_at = %s "
-            "WHERE id = %s",
+            "WHERE id = %s AND status = 'PENDING'",
             (datetime.now(), app_id),
         )
+        if cur.rowcount == 0:
+            flash("Application not found or is no longer pending.")
+            return redirect(url_for("admin_list"))
         conn.commit()
 
     except Exception:

@@ -1,9 +1,35 @@
+
 {% extends "base.html" %}
 {% block content %}
 <h2>Reset Password</h2>
-<form method="post">
-  <label>Registered Mobile Number</label>
-  <input type="text" name="mobile">
-  <p><button class="btn" type="submit">Reset Password</button></p>
+
+{% if step == "request" %}
+<form method="post" action="{{ url_for('reset_password') }}">
+    <label>Registered Mobile Number</label>
+    <input type="text" name="mobile" maxlength="10"
+           pattern="[0-9]{10}" required>
+    <p><button class="btn" type="submit">Send OTP</button></p>
 </form>
+
+{% elif step == "verify" %}
+<form method="post" action="{{ url_for('reset_password_verify') }}">
+    <label>Enter OTP</label>
+    <input type="text" name="otp" maxlength="6"
+           pattern="[0-9]{6}" inputmode="numeric" required>
+    <p><button class="btn" type="submit">Verify OTP</button></p>
+</form>
+
+{% elif step == "password" %}
+<form method="post" action="{{ url_for('reset_password_new') }}">
+    <label>New Password</label>
+    <input type="password" name="password" minlength="8" required>
+
+    <label>Confirm New Password</label>
+    <input type="password" name="confirm_password"
+           minlength="8" required>
+
+    <p><button class="btn" type="submit">Update Password</button></p>
+</form>
+{% endif %}
+
 {% endblock %}

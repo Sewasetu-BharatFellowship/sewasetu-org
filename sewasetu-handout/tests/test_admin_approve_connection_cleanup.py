@@ -64,3 +64,26 @@ def test_admin_approve_succeeds(app_module, monkeypatch):
     conn.commit.assert_called_once()
     cur.close.assert_called_once()
     conn.close.assert_called_once()
+    
+def test_admin_approve_rejects_non_pending_application(app_module, monkeypatch):
+    conn = MagicMock()
+    cur = MagicMock()
+    cur.rowcount = 0
+    conn.cursor.return_value = cur
+
+    monkeypatch.setattr(app_module, "get_db", lambda: conn)
+
+    with app_module.app.test_client() as client:
+        with client.session_transaction() as session:
+            session["logged_in"] = True
+            session["admin"] = True
+
+        response = client.post("/admin/approve/1")
+
+    query = cur.execute.call_args.args[0]
+
+    assert "status = 'PENDING'" in query
+    assert response.status_code == 302
+    conn.commit.assert_not_called()
+    cur.close.assert_called_once()
+    conn.close.assert_called_once()

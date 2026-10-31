@@ -1,3 +1,4 @@
+
 import app.app as app_module
 
 
@@ -8,8 +9,9 @@ def setup_otp_session(client, attempts=0):
 
 
 class FakeCursor:
-    def execute(self, *args):
-        pass
+    def execute(self, query, params=None):
+        self.query = query
+        self.params = params
 
     def fetchone(self):
         return ("123456", app_module.datetime.now())
@@ -21,6 +23,9 @@ class FakeCursor:
 class FakeConnection:
     def cursor(self):
         return FakeCursor()
+
+    def rollback(self):
+        pass
 
     def close(self):
         pass
