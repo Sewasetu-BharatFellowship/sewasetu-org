@@ -26,6 +26,7 @@ def job(monkeypatch):
     cursor = MagicMock()
     connection.cursor.return_value = cursor
 
+    monkeypatch.setenv("DB_PASSWORD", "test-password")
     monkeypatch.setattr(psycopg2, "connect", MagicMock(return_value=connection))
     monkeypatch.setattr(requests, "post", MagicMock())
 
@@ -138,3 +139,33 @@ def test_job_uses_config_path_from_environment():
     )
 
     assert result.returncode == 0, result.stderr
+
+def test_job_closes_database_resources_when_query_fails(job):
+    module, connection, cursor, requests = job
+
+    cursor.execute.side_effect = Exception("Database query failed")
+
+    with pytest.raises(Exception, match="Database query failed"):
+        module.main()
+
+    cursor.close.assert_called_once()
+    connection.close.assert_called_once()
+    connection.rollback.assert_called_once()
+
+
+def test_job_logs_failed_sms_notifications(job, caplog):
+    module, connection, cursor, requests = job
+
+    cursor.fetchall.return_value = [
+        ("APP-003", "9876543212")
+    ]
+    requests.post.side_effect = Exception("Gateway unavailable")
+
+    with caplog.at_level("ERROR"):
+        module.main()
+
+    assert "APP-003" in caplog.text
+    assert "SMS notification failed" in caplog.text
+
+    connection.commit.assert_called_once()
+    connection.close.assert_called_once()

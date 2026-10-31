@@ -1,3 +1,4 @@
+
 # -*- coding: utf-8 -*-
 """
 Nightly deemed-approval job.
@@ -12,10 +13,12 @@ Scheduled via cron, 02:00 daily. See deploy/crontab.
 import os
 import sys
 import configparser
+import logging
 from datetime import datetime, timedelta
 
 import psycopg2
 import requests
+
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -36,38 +39,85 @@ with open(CONFIG_PATH, encoding="utf-8") as fh:
 SLA_DAYS = config.getint("pension", "sla_days")
 SMS_GATEWAY_URL = config.get("app", "sms_gateway_url")
 
+logger = logging.getLogger(__name__)
+
 
 def main():
-    conn = psycopg2.connect(
-        host=config.get("database", "host"),
-        port=config.get("database", "port"),
-        dbname=config.get("database", "name"),
-        user=config.get("database", "user"),
-        password=config.get("database", "password"),
-    )
-    cur = conn.cursor()
-    cutoff = datetime.now() - timedelta(days=SLA_DAYS)
-    cur.execute(
-        """UPDATE applications
-           SET status = 'DEEMED_APPROVED', decided_at = %s, decided_by = 'RTPS-AUTO'
-           WHERE status = 'PENDING' AND submitted_at < %s
-           RETURNING application_no, mobile""",
-        (datetime.now(), cutoff))
-    rows = cur.fetchall()
-    conn.commit()
+    conn = None
+    cur = None
+
+    try:
+        conn = psycopg2.connect(
+            host=config.get("database", "host"),
+            port=config.get("database", "port"),
+            dbname=config.get("database", "name"),
+            user=config.get("database", "user"),
+            password=os.environ["DB_PASSWORD"],
+        )
+
+        cur = conn.cursor()
+
+        now = datetime.now()
+        cutoff = now - timedelta(days=SLA_DAYS)
+
+        cur.execute(
+            """UPDATE applications
+               SET status = 'DEEMED_APPROVED',
+                   decided_at = %s,
+                   decided_by = 'RTPS-AUTO'
+               WHERE status = 'PENDING' AND submitted_at < %s
+               RETURNING application_no, mobile""",
+            (now, cutoff),
+        )
+
+        rows = cur.fetchall()
+        conn.commit()
+
+    except Exception:
+        if conn is not None:
+            conn.rollback()
+        raise
+
+    finally:
+        if cur is not None:
+            cur.close()
+        if conn is not None:
+            conn.close()
+
+    # Send notifications only after the approval transaction commits.
     for app_no, mobile in rows:
         try:
-            requests.post(SMS_GATEWAY_URL + "/api/send", json={
-                "to": mobile,
-                "text": "Sewa Setu: your pension application %s stands approved "
-                        "under the RTPS Act." % app_no}, timeout=5)
-        except Exception:
-            pass
-    print("%s deemed approval: %d applications approved"
-          % (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), len(rows)))
-    cur.close()
-    conn.close()
+            response = requests.post(
+                SMS_GATEWAY_URL + "/api/send",
+                json={
+                    "to": mobile,
+                    "text": (
+                        "Sewa Setu: your pension application %s stands approved "
+                        "under the RTPS Act." % app_no
+                    ),
+                },
+                timeout=5,
+            )
+
+            response.raise_for_status()
+
+        except Exception as exc:
+            logger.error(
+                "SMS notification failed for application %s: %s",
+                app_no,
+                exc,
+            )
+
+    logger.info(
+        "%s deemed approval: %d applications approved",
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        len(rows),
+    )
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     sys.exit(main())

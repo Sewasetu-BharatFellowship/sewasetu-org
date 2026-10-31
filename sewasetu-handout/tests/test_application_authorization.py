@@ -192,3 +192,56 @@ def test_admin_can_download_any_citizens_pdf(
     response = client.get("/ack/1.pdf")
 
     assert response.status_code == 200
+
+
+from datetime import datetime, timedelta
+
+
+def test_overdue_pending_application_shows_deemed_approval(
+
+    client, monkeypatch
+):
+    overdue_row = list(CITIZEN_B_ROW)
+    overdue_row[2] = "8888888888"
+    overdue_row[8] = "PENDING"
+    overdue_row[9] = (
+        datetime.now() - timedelta(days=app_module.SLA_DAYS + 1)
+    )
+
+    login_as_citizen(client, "8888888888")
+
+    monkeypatch.setattr(
+        app_module,
+        "get_db",
+        lambda: MockConnection(tuple(overdue_row)),
+    )
+
+    response = client.get("/application/1")
+
+    assert response.status_code == 200
+    assert b"APPROVED (RTPS Deemed Approval)" in response.data
+
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "/admin/approve/1",
+        "/admin/reject/1",
+    ],
+)
+def test_citizen_cannot_approve_or_reject_application(
+    client, monkeypatch, endpoint
+):
+    login_as_citizen(client, "8888888888")
+
+    def fail_if_db_accessed():
+        pytest.fail("Unauthorized citizen request accessed database")
+
+    monkeypatch.setattr(
+        app_module,
+        "get_db",
+        fail_if_db_accessed,
+    )
+
+    response = client.post(endpoint)
+
+    assert response.status_code == 403

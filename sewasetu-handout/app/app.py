@@ -152,13 +152,29 @@ def apply():
             flash("Something went wrong. Please try again.")
             return render_template("apply.html", captcha_q=make_captcha())
         code = str(random.randint(100000, 999999))
+        
         conn = get_db()
-        cur = conn.cursor()
-        cur.execute("INSERT INTO otps (mobile, code, created_at) VALUES (%s, %s, %s)",
-                    (mobile, code, datetime.now()))
-        conn.commit()
-        cur.close(); conn.close()
+        cur = None
+
+        try:    
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO otps (mobile, code, created_at) VALUES (%s, %s, %s)",
+                (mobile, code, datetime.now()),
+            )
+            conn.commit()
+
+        except Exception:
+            conn.rollback()
+            raise
+
+        finally:
+            if cur is not None:
+                cur.close()
+            conn.close()
+
         send_sms(mobile, "Your Sewa Setu OTP is %s. Valid for 5 minutes." % code)
+
         session.permanent = True
         session["apply_mobile"] = mobile
         return redirect(url_for("verify"))
@@ -178,12 +194,28 @@ def verify():
         return redirect(url_for("apply"))
     if request.method == "POST":
         code = request.form.get("otp", "").strip()
+
         conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT code, created_at FROM otps WHERE mobile = %s "
-                    "ORDER BY id DESC LIMIT 1", (mobile,))
-        row = cur.fetchone()
-        cur.close(); conn.close()
+        cur = None
+
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT code, created_at FROM otps WHERE mobile = %s "
+                "ORDER BY id DESC LIMIT 1",
+                (mobile,),
+            )
+            row = cur.fetchone()
+
+        except Exception:
+            conn.rollback()
+            raise
+
+        finally:
+            if cur is not None:
+                cur.close()
+            conn.close()
+
         if row and row[0] == code:
             age = (datetime.now() - row[1]).total_seconds()
             if age > OTP_VALIDITY_SECONDS:
@@ -495,47 +527,89 @@ def status_login():
     if request.method == "POST":
         mobile = request.form.get("mobile", "").strip()
         password = request.form.get("password", "")
+
         conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT password_hash FROM portal_users WHERE mobile = %s", (mobile,))
-        row = cur.fetchone()
-        cur.close(); conn.close()
+        cur = None
+
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT password_hash FROM portal_users WHERE mobile = %s",
+                (mobile,),
+            )
+            row = cur.fetchone()
+
+        except Exception:
+            conn.rollback()
+            raise
+
+        finally:
+            if cur is not None:
+                cur.close()
+            conn.close()
+
         if row and row[0] == hash_password(password):
             session["logged_in"] = True
             session["portal_mobile"] = mobile
+
             conn = get_db()
-            cur = conn.cursor()
-            cur.execute("SELECT id FROM applications WHERE mobile = %s "
-                        "ORDER BY submitted_at DESC LIMIT 1", (mobile,))
-            r = cur.fetchone()
-            cur.close(); conn.close()
+            cur = None
+
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT id FROM applications WHERE mobile = %s "
+                    "ORDER BY submitted_at DESC LIMIT 1",
+                    (mobile,),
+                )
+                r = cur.fetchone()
+
+            except Exception:
+                conn.rollback()
+                raise
+
+            finally:
+                if cur is not None:
+                    cur.close()
+                conn.close()
+
             if r:
                 return redirect(url_for("view_application", app_id=r[0]))
+
             flash("No application found for this mobile number.")
             return redirect(url_for("status_login"))
-        flash("Something went wrong. Please try again.")
-    return render_template("status_login.html")
 
+        flash("Something went wrong. Please try again.")
+
+    return render_template("status_login.html")
 
 @app.route("/application/<int:app_id>")
 def view_application(app_id):
     if not session.get("logged_in"):
         flash("Please login to view application status.")
         return redirect(url_for("status_login"))
-
+    
     conn = get_db()
-    cur = conn.cursor()
+    cur = None
 
-    cur.execute(
-        "SELECT application_no, applicant_name, mobile, dob, village, block, "
-        "bank_account, ifsc, status, submitted_at, decided_at "
-        "FROM applications WHERE id = %s",
-        (app_id,)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT application_no, applicant_name, mobile, dob, village, block, "
+            "bank_account, ifsc, status, submitted_at, decided_at "
+            "FROM applications WHERE id = %s",
+            (app_id,)
     )
-    row = cur.fetchone()
+        row = cur.fetchone()
 
-    cur.close()
-    conn.close()
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
 
     if not row:
         abort(404)
@@ -545,8 +619,18 @@ def view_application(app_id):
     if not session.get("admin") and row[2] != session.get("portal_mobile"):
         abort(403)
 
-    return render_template("application.html", a=row, app_id=app_id)
+        # Display deemed approval when the statutory SLA has expired,
+    # even if the scheduled job has not updated the database yet.
+    if (
+        row[8] == "PENDING"
+        and row[9] is not None
+        and row[9] < datetime.now() - timedelta(days=SLA_DAYS)
+    ):
+        row = list(row)
+        row[8] = "DEEMED_APPROVED"
+        row = tuple(row)
 
+    return render_template("application.html", a=row, app_id=app_id)
 
 @app.route("/ack/<int:app_id>.pdf")
 def ack_pdf(app_id):
@@ -556,16 +640,24 @@ def ack_pdf(app_id):
 
     # Always verify ownership before checking the cached PDF.
     conn = get_db()
-    cur = conn.cursor()
+    cur = None
 
-    cur.execute(
-        "SELECT mobile FROM applications WHERE id = %s",
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT mobile FROM applications WHERE id = %s",
         (app_id,)
     )
-    row = cur.fetchone()
+        row = cur.fetchone()
 
-    cur.close()
-    conn.close()
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
 
     if not row:
         abort(404)
@@ -596,26 +688,64 @@ def ack_pdf(app_id):
 @app.route("/status/reset", methods=["GET", "POST"])
 def reset_password():
     if request.method == "POST":
-        mobile = request.form.get("mobile", "")
-        conn = get_db()
-        cur = conn.cursor()
-        # fetch account for reset
-        cur.execute("SELECT mobile FROM portal_users WHERE mobile = '%s'" % mobile)
-        row = cur.fetchone()
-        if row:
-            cur.execute("SELECT dob FROM applications WHERE mobile = '%s' LIMIT 1" % mobile)
-            r2 = cur.fetchone()
-            if r2:
-                newpass = r2[0].strftime("%d%m%Y")
-                cur.execute("UPDATE portal_users SET password_hash = %s WHERE mobile = %s",
-                            (hash_password(newpass), row[0]))
-                conn.commit()
-                send_sms(row[0], "Sewa Setu: your password has been reset to your "
-                                 "date of birth (DDMMYYYY).")
-        cur.close(); conn.close()
-        flash("If the mobile number exists, the password has been reset and sent by SMS.")
-    return render_template("reset.html")
+        mobile = request.form.get("mobile", "").strip()
 
+        conn = get_db()
+        cur = None
+        sms_details = None
+
+        try:
+            cur = conn.cursor()
+
+            # Fetch account using parameterized query
+            cur.execute(
+                "SELECT mobile FROM portal_users WHERE mobile = %s",
+                (mobile,)
+            )
+            row = cur.fetchone()
+
+            if row:
+                # Fetch date of birth using parameterized query
+                cur.execute(
+                    "SELECT dob FROM applications WHERE mobile = %s LIMIT 1",
+                    (mobile,)
+                )
+                r2 = cur.fetchone()
+
+                if r2:
+                    newpass = r2[0].strftime("%d%m%Y")
+
+                    cur.execute(
+                        "UPDATE portal_users SET password_hash = %s WHERE mobile = %s",
+                        (hash_password(newpass), row[0])
+                    )
+
+                    conn.commit()
+                    sms_details = row[0]
+
+        except Exception:
+            conn.rollback()
+            raise
+
+        finally:
+            if cur is not None:
+                cur.close()
+            conn.close()
+
+        # Send SMS only after the database connection is closed
+        if sms_details:
+            send_sms(
+                sms_details,
+                "Sewa Setu: your password has been reset to your "
+                "date of birth (DDMMYYYY)."
+            )
+
+        flash(
+            "If the mobile number exists, the password has been reset "
+            "and sent by SMS."
+        )
+
+    return render_template("reset.html")
 
 # ---------------------------------------------------------------------------
 # Admin
@@ -711,50 +841,96 @@ def admin_list():
     )
 
 
+
 @app.route("/admin/application/<int:app_id>")
 def admin_view(app_id):
     if not session.get("admin"):
         return redirect(url_for("admin_login"))
+
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT application_no, applicant_name, mobile, dob, gender, "
-                "marital_status, village, block, bank_account, ifsc, doc_path, "
-                "status, submitted_at, decided_at, decided_by "
-                "FROM applications WHERE id = %s", (app_id,))
-    row = cur.fetchone()
-    cur.close(); conn.close()
+    cur = None
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT application_no, applicant_name, mobile, dob, gender, "
+            "marital_status, village, block, bank_account, ifsc, doc_path, "
+            "status, submitted_at, decided_at, decided_by "
+            "FROM applications WHERE id = %s",
+            (app_id,),
+        )
+        row = cur.fetchone()
+
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
+
     if not row:
         abort(404)
+
     return render_template("admin_view.html", a=row, app_id=app_id)
+
 
 
 @app.route("/admin/approve/<int:app_id>", methods=["POST"])
 def admin_approve(app_id):
-    if not session.get("logged_in"):
+    if not session.get("admin"):
         abort(403)
+
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("UPDATE applications SET status = 'APPROVED', decided_at = %s "
-                "WHERE id = %s", (datetime.now(), app_id))
-    conn.commit()
-    cur.close(); conn.close()
+    cur = None
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE applications SET status = 'APPROVED', decided_at = %s "
+            "WHERE id = %s",
+            (datetime.now(), app_id),
+        )
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
+
     flash("Application approved.")
     return redirect(url_for("admin_list"))
 
 
 @app.route("/admin/reject/<int:app_id>", methods=["POST"])
 def admin_reject(app_id):
-    if not session.get("logged_in"):
+    if not session.get("admin"):
         abort(403)
+
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("UPDATE applications SET status = 'REJECTED', decided_at = %s "
-                "WHERE id = %s", (datetime.now(), app_id))
-    conn.commit()
-    cur.close(); conn.close()
+    cur = None
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE applications SET status = 'REJECTED', decided_at = %s "
+            "WHERE id = %s",
+            (datetime.now(), app_id),
+        )
+        conn.commit()
+
+    except Exception:
+        conn.rollback()
+        raise
+
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
+
     flash("Application rejected.")
     return redirect(url_for("admin_list"))
-
 
 # ---------------------------------------------------------------------------
 # Unused / legacy

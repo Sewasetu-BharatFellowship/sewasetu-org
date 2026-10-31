@@ -9,7 +9,24 @@ SCRIPT = ROOT / "app" / "scripts" / "deemed_approval.py"
 CONFIG = ROOT / "app" / "config" / "test.ini"
 
 NETWORK = "sewasetu-handout_default"
-DB_PASSWORD = "sewasetu123"
+
+
+def load_env_value(key):
+    env_file = ROOT / ".env"
+
+    if not env_file.exists():
+        raise RuntimeError(".env file is missing")
+
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+
+        if line.startswith(f"{key}="):
+            return line.split("=", 1)[1].strip().strip('"').strip("'")
+
+    raise RuntimeError(f"{key} not found in .env")
+
+
+DB_PASSWORD = load_env_value("DB_PASSWORD")
 
 
 def test_real_postgres_deemed_approval():
@@ -28,6 +45,7 @@ def test_real_postgres_deemed_approval():
         "docker", "run", "--rm",
         "--network", NETWORK,
         "-e", "DEEMED_APPROVAL_CONFIG=/test.ini",
+        "--env-file", str(ROOT / ".env"),
         "-v", f"{SCRIPT}:/job/deemed_approval.py:ro",
         "-v", f"{CONFIG}:/test.ini:ro",
         "python:3.11-slim",
