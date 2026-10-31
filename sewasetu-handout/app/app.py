@@ -633,23 +633,48 @@ def admin_login():
     return render_template("admin_login.html")
 
 
+
 @app.route("/admin/dashboard")
 def admin_dashboard():
     if not session.get("admin"):
         return redirect(url_for("admin_login"))
+
     conn = get_db()
-    cur = conn.cursor()
-    cur.execute("SELECT status, count(*) FROM applications GROUP BY status")
-    by_status = cur.fetchall()
-    cur.execute("SELECT count(*) FROM applications WHERE status = 'PENDING' "
-                "AND submitted_at < %s", (datetime.now() - timedelta(days=SLA_DAYS),))
-    overdue = cur.fetchone()[0]
-    cur.execute("SELECT block, count(*) FROM applications WHERE status = 'PENDING' "
-                "GROUP BY block ORDER BY count(*) DESC")
-    by_block = cur.fetchall()
-    cur.close(); conn.close()
-    return render_template("admin_dashboard.html", by_status=by_status,
-                           overdue=overdue, by_block=by_block, sla=SLA_DAYS)
+    cur = None
+
+    try:
+        cur = conn.cursor()
+
+        cur.execute(
+            "SELECT status, count(*) FROM applications GROUP BY status"
+        )
+        by_status = cur.fetchall()
+
+        cur.execute(
+            "SELECT count(*) FROM applications WHERE status = 'PENDING' "
+            "AND submitted_at < %s",
+            (datetime.now() - timedelta(days=SLA_DAYS),),
+        )
+        overdue = cur.fetchone()[0]
+
+        cur.execute(
+            "SELECT block, count(*) FROM applications WHERE status = 'PENDING' "
+            "GROUP BY block ORDER BY count(*) DESC"
+        )
+        by_block = cur.fetchall()
+
+    finally:
+        if cur is not None:
+            cur.close()
+        conn.close()
+
+    return render_template(
+        "admin_dashboard.html",
+        by_status=by_status,
+        overdue=overdue,
+        by_block=by_block,
+        sla=SLA_DAYS,
+    )
 
 
 
