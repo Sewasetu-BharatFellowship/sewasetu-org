@@ -332,6 +332,7 @@ def correction_session_is_valid():
             cur.close()
         conn.close()
 
+
 @app.route("/form/<int:step>", methods=["GET", "POST"])
 def form_step(step):
     if not session.get("verified_mobile"):
@@ -349,6 +350,57 @@ def form_step(step):
 
     if step not in (1, 2, 3):
         abort(404)
+
+    # Keep previously entered data, including correction data.
+    data = session.get("form_data", {})
+
+    # Fields belonging to each form step.
+    step_fields = {
+        1: [
+            "applicant_name",
+            "dob",
+            "gender",
+            "marital_status",
+            "husband_name",
+            "husband_employer",
+        ],
+        2: [
+            "village",
+            "block",
+        ],
+        3: [
+            "bank_account",
+            "ifsc",
+        ],
+    }
+
+    if request.method == "POST":
+        # Save only fields belonging to the current step.
+        for field in step_fields[step]:
+            data[field] = request.form.get(field, "").strip()
+
+        session["form_data"] = data
+        session.modified = True
+
+        if step < 3:
+            return redirect(url_for("form_step", step=step + 1))
+
+        # All three form steps are complete.
+        return redirect(url_for("upload"))
+
+    # Render the requested step.
+    if step == 1:
+        return render_template("form_step1.html", data=data)
+
+    if step == 2:
+        return render_template(
+            "form_step2.html",
+            data=data,
+            blocks=BLOCKS
+        )
+
+    return render_template("form_step3.html", data=data)
+
 
 @app.route("/upload", methods=["GET", "POST"])
 def upload():
